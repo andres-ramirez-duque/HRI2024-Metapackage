@@ -1,0 +1,127 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+	<style>
+		p {
+			font-size:	1.1em;
+		}
+		#output, #active_page {
+			width:		920px;
+			height:		850px;
+			margin: 	5px 10px;
+			padding:    0px;
+			border:     0px
+		}
+		#shell  {
+			width:		920px;
+			height:		100px;
+			margin: 	5px 10px;
+			padding:    0px;
+			border:     0px;
+			overflow:	scroll;
+		}
+	</style>
+</head>
+<body>
+	<iframe id="active_page" name="ActivePage" src="about:blank"></iframe>
+	<iframe id="shell" name="myShell" src="about:blank"></iframe>
+
+	<script>
+		var ros_IP = "10.42.0.254";
+		var naoqi= false;
+		var t_doactivity = '5';
+		var t_idle = '5';
+		var t_pause = '5';
+		var t_query_response = '5';
+		var child_name = 'Sarah';
+		var hospital_name = 'Hospital for Sick Children';
+		var jet_name = 'tobojetuk';
+		var rasp_name_a = 'toboraspuk-desktop';
+		var rasp_name = 'toboraspuk';
+		var rasp_pass = 'tobo2021';
+		var passphrase = 'tobo2023';
+		var jet_IP = '10.42.0.1';
+		var nao_IP = '192.168.42.176'; 
+		var recording_len = 35000;
+		var url = "htmls/main.html";
+		var shell_url = "http://"+ros_IP+":4200";
+    
+		sessionStorage.setItem('ros_IP',ros_IP);
+		sessionStorage.setItem('jet_IP',jet_IP);
+		sessionStorage.setItem('nao_IP',nao_IP);
+		sessionStorage.setItem('naoip_checked',false);
+		sessionStorage.setItem('jet_name',jet_name);
+		sessionStorage.setItem('rasp_name',rasp_name);
+		sessionStorage.setItem('naoqi', naoqi);
+		sessionStorage.setItem('t_doactivity',t_doactivity);
+		sessionStorage.setItem('t_query_response',t_query_response);
+		sessionStorage.setItem('t_idle',t_idle);
+		sessionStorage.setItem('t_pause',t_pause);
+		sessionStorage.setItem('child_name',child_name);
+		sessionStorage.setItem('hospital_name',hospital_name);
+    	sessionStorage.setItem('recording_len',recording_len);
+		// Receive response from shellinabox
+		window.addEventListener("message", function(message) {
+			// Allow messages only from shellinabox
+			if (message.origin !== shell_url) {
+				return;
+			}
+
+			// Handle response according to response type
+			var decoded = JSON.parse(message.data);
+			
+			switch (decoded.type) {
+			case "ready":
+				// Shellinabox is ready to communicate and we will enable console output
+				// by default.
+				var message = JSON.stringify({
+					type : 'output',
+					data : 'enable'
+				});
+				shell.contentWindow.postMessage(message, shell_url);
+				break;
+			case "output" :
+				// Append new output
+				//console.log('Data = ' + decoded.data+'\n');
+				if (decoded.data == rasp_name_a+' login: '){
+				  var message = JSON.stringify({
+				      type : 'input',
+				      data : rasp_name+'\n'
+	        });
+		      shell.contentWindow.postMessage(message, shell_url);
+				}
+				if (decoded.data == 'Password: '){
+				  var message = JSON.stringify({
+				      type : 'input',
+				      data : rasp_pass+'\n'
+	        });
+		      shell.contentWindow.postMessage(message, shell_url);
+				}
+				if (decoded.data == 'Enter passphrase for /home/'+rasp_name+'/.ssh/id_rsa: '){
+				  var message = JSON.stringify({
+				      type : 'input',
+				      data : passphrase+'\n'
+	        });
+		      shell.contentWindow.postMessage(message, shell_url);
+				}
+				break;
+			case "session" :
+				console.log('Session status: ' + decoded.data);
+			  if (decoded.data == 'closed'){
+				  // Reload session status
+				  var message = JSON.stringify({
+				    type : 'reconnect'
+			    });
+			    shell.contentWindow.postMessage(message, shell_url);
+				}
+				break;
+			}
+		}, false);
+
+		// Add url to our iframe after the event listener is installed.
+		active_page.src = url;
+
+	</script>
+
+</body>
+</html>

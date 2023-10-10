@@ -1,0 +1,44 @@
+
+
+#####################################################################################
+## Running
+#####################################################################################
+
+## requires prp
+# go into getanaction and change PRP_ROOT to point at it.
+
+## to run
+# this will print a single action to the standard out (last line of output)
+
+./getanaction model0.2/domain_plan.pddl model0.2/scenario_background_knowledge.pddl model0.2/state_frames_scenario.txt aplan.out
+
+
+
+
+#####################################################################################
+## Use in demo
+#####################################################################################
+# the intention is to use this within a loop
+# before the loop clear strategy file:
+rm aplan.out
+# then run as above
+# the action suggested by getanaction is implemented
+# this changes the state of the world 
+# this leads to a new scenario.pddl
+# this can currently be simulated by detailing the state through the interactive prompts.. 
+
+
+
+
+#####################################################################################
+## Scenario Builder
+#####################################################################################
+# requires domain, background knowledge as a problem pddl file, state frames and an ouput problem model filename:
+# uses dummy_state_manager to acquire missing parts of the state and combine with background knowledge to create a single planning problem description.
+# Run e.g.,:
+cd planning_service
+python2 state_builder.py model0.2/domain_plan.pddl model0.2/scenario_background_knowledge.pddl model0.2/state_frames_scenario.txt pout.pddl
+
+
+
+

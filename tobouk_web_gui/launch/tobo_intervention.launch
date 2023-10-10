@@ -1,0 +1,5 @@
+<launch>
+  <include file="$(find tobouk_core)/launch/tobo_core.launch"/>
+  <include file="$(find tobo_planner)/launch/tobo_planner.launch"/>
+    
+</launch>
