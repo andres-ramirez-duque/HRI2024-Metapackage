@@ -8,13 +8,19 @@
     (uselecteddivert )
     (uselectedcalming )
     (doneanxietytest )
-    (okanxiety )
+    (highanxiety )
+    (midanxiety )
+    (lowanxiety )
+    (noanxietyreading )
     (doneengagementtest )
     (okengagement )
     (haspaused )
     (haswaited )
-    (introducing ?a - activity)
-    (introductioncomplete )
+    (bhighanxiety )
+    (bmidanxiety )
+    (blowanxiety )
+    (haveanxietybelief )
+    (requiresbeliefupdate )
     (hasdiverted )
     (diverting ?a - activity)
     (hascalmed )
@@ -22,14 +28,13 @@
     (amrequiresanxietytest )
     (amrequiresdivertion )
     (amrequirescalming )
-    (amrequiresanxietyretest )
     (amperforminganxietymanagement )
     (amanxietymanagementcomplete )
-    (amanxietymanaged )
     (amrequiresengagementtest )
     (amconeengagementtest )
     (tomanageanxiety )
     (amabort )
+    (requiresanxietymanagementcompletion )
     (eamdoneengagementtest )
     (eamrequiresengagementtest )
     (withdrawl ?a - activity)
@@ -48,14 +53,16 @@
     (patientstrategyinfo ?a - activity)
     (givenstrategyinfo )
     (completedprocedure )
-    (procedurehasfinished )
     (duringprocedure )
-    (thirdperiod)
     (firstperiod )
     (secondperiod )
+    (thirdperiod )
     (procedurestillrunning )
+    (procedurehasfinished )
     (procedurecomplicationsoccurred )
     (waitedforproceduretoend )
+    (introducing ?a - activity)
+    (introductioncomplete )
     (reward ?a - activity)
     (debriefcomplete )
     (finalise ?a - activity)
@@ -104,19 +111,52 @@
     (intropausecomplete )
     (not (duringprocedure ))
     (not (duringpreprocedure ))
-    (not (completedpreprocedure )))
+    (not (completedpreprocedure ))
+    (not (haveanxietybelief )))
     :effect
    (and
     (canmakedivertionplan )
-    (duringpreprocedure )
-    (tomanageanxiety ))
+    (duringpreprocedure ))
   )
-  (:action pameducateonprocedure
+  (:action pameducateonprocedurelowanxiety
     :parameters (?a - activity)
     :precondition (and
+    (blowanxiety )
+    (blowanxiety )
     (not (amperforminganxietymanagement ))
     (procedureinfo ?a)
-    (duringpreprocedure ))
+    (duringpreprocedure )
+    (haveanxietybelief ))
+    :effect
+   (and
+    (haseducated )
+    (givenprocedureinfo )
+    (doneactivity ?a))
+  )
+  (:action pameducateonproceduremidanxiety
+    :parameters (?a - activity)
+    :precondition (and
+    (bmidanxiety )
+    (bmidanxiety )
+    (not (amperforminganxietymanagement ))
+    (procedureinfo ?a)
+    (duringpreprocedure )
+    (haveanxietybelief ))
+    :effect
+   (and
+    (haseducated )
+    (givenprocedureinfo )
+    (doneactivity ?a))
+  )
+  (:action pameducateonprocedurehighanxiety
+    :parameters (?a - activity)
+    :precondition (and
+    (bhighanxiety )
+    (bhighanxiety )
+    (not (amperforminganxietymanagement ))
+    (procedureinfo ?a)
+    (duringpreprocedure )
+    (haveanxietybelief ))
     :effect
    (and
     (haseducated )
@@ -126,7 +166,9 @@
   (:action ivcompletepreprocedure
     :precondition (and
     (hasmadedivertionplan )
-    (amanxietymanagementcomplete )
+    (haveanxietybelief )
+    (not (amperforminganxietymanagement ))
+    (not (bhighanxiety ))
     (hasdiverted )
     (haseducated )
     (duringpreprocedure ))
@@ -136,35 +178,28 @@
     (completedpreprocedure )
     (not (haseducated ))
     (not (hasdiverted ))
-    (not (hascalmed )))
+    (not (hascalmed ))
+    (not (haveanxietybelief )))
   )
   (:action ppstartanxietymanagement
     :precondition (and
-    (haseducated )
     (duringpreprocedure )
-    (tomanageanxiety )
-    (not (amperforminganxietymanagement )))
+    (not (amperforminganxietymanagement ))
+    (doneanxietytest )
+    (haveanxietybelief ))
     :effect
    (and
-    (not (tomanageanxiety ))
-    (amrequiresanxietytest )
-    (amperforminganxietymanagement ))
+    (amperforminganxietymanagement )
+    (amrequiresdivertion ))
   )
   (:action ppamtestanxiety
     :precondition (and
     (duringpreprocedure )
-    (amrequiresanxietytest )
-    (amperforminganxietymanagement ))
+    (not (doneanxietytest )))
     :effect
    (and
-    (oneof (and
-    (amanxietymanaged )
-    (amanxietymanagementcomplete )
-    (not (amperforminganxietymanagement ))
-    (okanxiety )) (and
-    (amrequiresdivertion )
-    (not (okanxiety ))))
-    (not (amrequiresanxietytest ))
+    (oneof (oneof (lowanxiety ) (midanxiety )) (oneof (highanxiety ) (noanxietyreading )))
+    (requiresbeliefupdate )
     (doneanxietytest ))
   )
   (:action ppdivertor
@@ -172,6 +207,7 @@
     :precondition (and
     (not (amperforminganxietymanagement ))
     (duringpreprocedure )
+    (not (requiresbeliefupdate ))
     (not (doneactivity ?a))
     (diverting ?a))
     :effect
@@ -207,26 +243,46 @@
     :effect
    (and
     (not (amrequirescalming ))
-    (amrequiresanxietyretest )
+    (requiresanxietymanagementcompletion )
     (hascalmed )
     (doneactivity ?a))
   )
-  (:action ppamretestanxiety
+  (:action ppamanxietymanagementcompletionhigh2mid
     :precondition (and
     (duringpreprocedure )
-    (amrequiresanxietyretest )
-    (amperforminganxietymanagement ))
+    (bhighanxiety )
+    (amperforminganxietymanagement )
+    (requiresanxietymanagementcompletion ))
     :effect
    (and
-    (oneof (and
-    (amanxietymanaged )
-    (amanxietymanagementcomplete )
-    (okanxiety )) (and
-    (amabort )
-    (not (okanxiety ))))
-    (not (amrequiresanxietyretest ))
-    (not (amperforminganxietymanagement ))
-    (doneanxietytest ))
+    (not (bhighanxiety ))
+    (bmidanxiety )
+    (not (requiresanxietymanagementcompletion ))
+    (not (amperforminganxietymanagement )))
+  )
+  (:action ppamanxietymanagementcompletionmid2low
+    :precondition (and
+    (duringpreprocedure )
+    (bmidanxiety )
+    (amperforminganxietymanagement )
+    (requiresanxietymanagementcompletion ))
+    :effect
+   (and
+    (not (bmidanxiety ))
+    (blowanxiety )
+    (not (requiresanxietymanagementcompletion ))
+    (not (amperforminganxietymanagement )))
+  )
+  (:action ppamanxietymanagementcompletionlow2low
+    :precondition (and
+    (duringpreprocedure )
+    (blowanxiety )
+    (amperforminganxietymanagement )
+    (requiresanxietymanagementcompletion ))
+    :effect
+   (and
+    (not (requiresanxietymanagementcompletion ))
+    (not (amperforminganxietymanagement )))
   )
   (:action ppamengagementtest
     :precondition (and
@@ -248,7 +304,8 @@
     :precondition (and
     (duringpreprocedure )
     (eamdisengaged )
-    (withdrawl ?a))
+    (withdrawl ?a)
+    (bhighanxiety ))
     :effect
    (and
     (not (duringpreprocedure ))
@@ -297,28 +354,26 @@
     (not (isreadyforprocedure ))
     (not (duringsitecheck ))
     (not (completedsitecheck ))
-    (not (requiressitecheck)))
+    (not (requiressitecheck )))
     :effect
    (and
     (oneof (and
-        (requiressitecheck)) 
-      (and
-        (completedsitecheck )))
-        (haswaited ))
+    (requiressitecheck )) (and
+    (completedsitecheck )))
+    (haswaited ))
   )
   (:action ivstartsitecheck
     :precondition (and
-    (introductioncomplete )
-    (intropausecomplete )
-    (completedpreprocedure)
-    (not (duringprocedure ))
     (not (duringpreprocedure ))
-    (requiressitecheck)
-    (not (duringsitecheck )))
+    (not (duringprocedure ))
+    (completedpreprocedure )
+    (not (isreadyforprocedure ))
+    (not (duringsitecheck ))
+    (requiressitecheck )
+    (not (completedsitecheck )))
     :effect
    (and
-    (duringsitecheck )
-   )
+    (duringsitecheck ))
   )
   (:action completesitecheck
     :precondition (and
@@ -385,11 +440,10 @@
     :effect
    (and
     (oneof (and
-    (procedurehasfinished ))
-    (and
-    (procedurestillrunning )
+    (procedurehasfinished )) (and
     (secondperiod )
-    (not (hassatisfieddivertionplan ))))
+    (not (hassatisfieddivertionplan ))
+    (procedurestillrunning )))
     (not (firstperiod )))
   )
   (:action secondcompleteprocedure
@@ -403,40 +457,34 @@
     (oneof (and
     (procedurehasfinished )
     (not (procedurestillrunning ))) (and
-    (procedurestillrunning ) (thirdperiod)))
+    (thirdperiod )))
     (not (secondperiod )))
   )
-  
   (:action waitforproceduretoend
     :precondition (and
+    (thirdperiod )
     (procedurestillrunning )
-    (thirdperiod)
     (not (waitedforproceduretoend )))
     :effect
    (and
     (oneof (and
-    (procedurehasfinished )
     (not (procedurestillrunning ))
-    )
-    (and
+    (procedurehasfinished )) (and
     (procedurecomplicationsoccurred )))
     (waitedforproceduretoend )
-    (haswaited )
-    (not (thirdperiod)))
+    (not (thirdperiod ))
+    (haswaited ))
   )
   (:action completeprocedure
     :precondition (and
     (procedurehasfinished )
     (not (procedurestillrunning ))
-    (duringprocedure )
-    )
+    (duringprocedure ))
     :effect
-    (and
-      (not (duringprocedure ))
-      (completedprocedure )
-    )
+   (and
+    (not (duringprocedure ))
+    (completedprocedure ))
   )
-  
   (:action pimplementdivertionplancalm
     :parameters (?a - activity)
     :precondition (and
@@ -468,6 +516,8 @@
   (:action ppmakedivertionplan
     :precondition (and
     (duringpreprocedure )
+    (not (amperforminganxietymanagement ))
+    (not (requiresbeliefupdate ))
     (canmakedivertionplan )
     (not (hasmadedivertionplan )))
     :effect
@@ -525,4 +575,62 @@
     (finishcomplete )
     (doneactivity ?a))
   )
+  (:action ppupdatebelief2lowanxiety
+    :precondition (and
+    (duringpreprocedure )
+    (lowanxiety )
+    (doneanxietytest )
+    (requiresbeliefupdate ))
+    :effect
+   (and
+    (not (lowanxiety ))
+    (not (bmidanxiety ))
+    (not (bhighanxiety ))
+    (blowanxiety )
+    (haveanxietybelief )
+    (not (requiresbeliefupdate )))
+  )
+  (:action ppupdatebelief2midanxiety
+    :precondition (and
+    (duringpreprocedure )
+    (midanxiety )
+    (doneanxietytest )
+    (requiresbeliefupdate ))
+    :effect
+   (and
+    (not (midanxiety ))
+    (not (blowanxiety ))
+    (not (bhighanxiety ))
+    (bmidanxiety )
+    (haveanxietybelief )
+    (not (requiresbeliefupdate )))
+  )
+  (:action ppupdatebelief2highanxiety
+    :precondition (and
+    (duringpreprocedure )
+    (highanxiety )
+    (doneanxietytest )
+    (requiresbeliefupdate ))
+    :effect
+   (and
+    (not (highanxiety ))
+    (not (bmidanxiety ))
+    (not (blowanxiety ))
+    (bhighanxiety )
+    (haveanxietybelief )
+    (not (requiresbeliefupdate )))
+  )
+  (:action ppupdatebelief2previous
+    :precondition (and
+    (duringpreprocedure )
+    (noanxietyreading )
+    (doneanxietytest )
+    (requiresbeliefupdate ))
+    :effect
+   (and
+    (not (noanxietyreading ))
+    (haveanxietybelief )
+    (not (requiresbeliefupdate )))
+  )
 )
+; 0.047803 0.003691 92.2787272765

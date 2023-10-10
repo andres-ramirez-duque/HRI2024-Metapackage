@@ -3,11 +3,15 @@
 ---
 parameters:
     boolean_vars:
-        amanxietymanaged:         false
+#        amanxietymanaged:         false
         procedurehasfinished:       false 
 #        eamdisengaged:            false
         requiressitecheck:       false
         uselecteddivert:          false
+        highanxiety:             false
+        midanxiety:              false
+        lowanxiety:              false
+        noanxietyreading:        false
         
     last_executed_action:         ''
     previous_action:              ''
@@ -79,7 +83,11 @@ planner:
         doneactivity magic:                     false
         doneactivity bowout:                     false
         doneactivity strategyenforce:                     false
- 
+        requiresanxietymanagementcompletion:     false
+        bhighanxiety:                            false
+        bmidanxiety:                             false
+        blowanxiety:                             false
+        haveanxietybelief:                       false
 
 action_hierarchy:
     readyforprocedure:            readyforprocedure,wait
@@ -119,11 +127,9 @@ action_hierarchy:
     completeprocedure:            completeprocedure
 
 timeouts:                        
-    doactivity:                   5 #90
-    query_response:               5 #20
-    idle:                         1 #15
+    doactivity:                   0
+    query_response:               0
+    idle:                         0
     pause:                        0
-    wait:                         1
+    wait:                         0
     unknown_action:               0
-    action_chain_launcher_pause:  1
-    

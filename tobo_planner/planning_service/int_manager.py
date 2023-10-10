@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-import logging
+import logging, sys
 import threading
 import time
-
+import oyaml as yaml
 
 
 
 LOG=True
-ACTION_CHAIN_LAUNCHER_PAUSE=5
+SENSE_THEN_VALIDATE=True
 ROS=False
 
 class Enum(object): 
@@ -27,6 +27,8 @@ def key_deconstruct(k):
   return bits[0], bits[1], int(bits[2])
   
 def reconstruct_action_str(op, params):
+  if len(params) == 0:
+    return op
   return op+"_"+"_".join(params)
 
 """
@@ -63,9 +65,16 @@ class dummy_web_server_message(object):
   def __str__(self):
     return "DWSM [" + str(self.plan_step) + "] " + str(self.request_type) + " " + str(self.parameters)
 
+class dummy_sensor_message(object):
+  def __init__(self, message, t, indx):
+    self.parameters = (message,)
+    self.request_type = t
+    self.plan_step = indx
+  def __str__(self):
+    return "DSRM [" + str(self.plan_step) + "] " + str(self.request_type) + " " + str(self.parameters)
 
 ######################################################################################################
-### Timer util classes ###############################################################################
+### Threaded util classes ############################################################################
 ######################################################################################################
 
 class Timer(object):
@@ -95,8 +104,44 @@ class MessageGiver(Timer):
   def _trigger(self, args):
     apply(self.s, (self.m, args))
 
+class ThreadedRequest(object):
+  
+  def make_request(self, args):
+    x = threading.Thread(target=self.thread_function, args=args)
+    x.start()
+    
+  def thread_function(self, args):
+    if LOG:
+      print str(args), "---> calling function..."
+    self._make_request(args)
+    
+  def _make_request(self, args):
+    pass
+
+class ServiceRequest(ThreadedRequest):
+  def __init__(self):
+    super(ServiceRequest, self).__init__()
+  
+  def _make_request(self, args):
+    self.make_service_request(args)
+
+  def make_service_request(self, args):
+    service, msg, msg_type = args
+    rospy.wait_for_service(service, timeout=10)
+    resp = None
+    try:
+      sensor_querier = rospy.ServiceProxy(service, msg_type)
+      resp = sensor_querier(msg.request_type,msg.plan_step)
+      self.service_response(resp, args)
+    except rospy.ServiceException as e:
+      print("Service call failed: %s"%e)
+    
+
+  def service_response(self, resp, args):
+    pass
+
 ######################################################################################################
-### ros proxies/dummies for planner and webserver ####################################################
+### ros proxies/dummies for planner, webserver and sensors ###########################################
 ######################################################################################################
 
 class DummyWebServer(Timer):
@@ -110,6 +155,11 @@ class DummyWebServer(Timer):
     message_out = dummy_web_server_message(default, label, indx)
     self.start((message_out,))
     
+  def request_change(self, params, args):
+    obj, label, indx = key_deconstruct(args[0])
+    message_out = dummy_web_server_message(None, label, indx)
+    print "Making web server request: " + str(params)  
+    
   def _trigger(self, message):
     apply(self.s, (message,))
 
@@ -118,6 +168,7 @@ class WebServer(object):
   def __init__(self, s):
     self.web_chain_sub = rospy.Subscriber("/request", web_chain, s) 
     self.web_chain_pub = rospy.Publisher('/listener_req', web_chain, queue_size=10)
+    self.web_chain_command = rospy.Publisher('/listener_com', web_chain, queue_size=10)
   
   def ask_for_user_input(self, options, default, timeout=10, args = (1,)):
     obj, label, indx = key_deconstruct(args[0])
@@ -127,6 +178,15 @@ class WebServer(object):
     msg.parameters = options
     msg.duration = timeout
     self.web_chain_pub.publish(msg)
+    
+  def request_change(self, params, args):
+    obj, label, indx = key_deconstruct(args[0])
+    msg = web_chain()
+    msg.plan_step = indx
+    msg.request_type = label
+    msg.parameters = params
+    msg.duration = -1
+    self.web_chain_command.publish(msg)    
     
 
 class DummyPlanner(Timer):
@@ -150,7 +210,7 @@ class Planner(object):
     self.action_sub = rospy.Subscriber("/next_action", action_chain, s)
     
   def get_action(self, plan_step):
-    mode = "chicken"
+    mode = "Get an action"
     print "%%%%%%%%%%%%% PASSING INTO PLANNER", mode, plan_step
     self.get_an_action_client(mode, plan_step)
 
@@ -164,6 +224,42 @@ class Planner(object):
       print("Service call failed: %s"%e)
 
 
+class DummySensors(Timer):
+  def __init__(self, t, s):
+    super(DummySensors, self).__init__(t)
+    self.s=s
+  
+  def get_sensor_value(self, default, args):
+    obj, label, indx = key_deconstruct(args[0])
+    message_out = dummy_sensor_message(default, label, indx)
+    #super(DummySensors, self).start((message_out,))
+    self.start((message_out,))
+    
+  def _trigger(self, args):
+    apply(self.s, (args,))
+
+class SensorRequest(ServiceRequest):
+  def __init__(self, s):
+    self.s=s
+  
+  def service_response(self, resp, args):
+    _, msg, _ = args
+    message = dummy_sensor_message(resp.sensor_value, msg.request_type, msg.plan_step)
+    apply(self.s, (message,))
+
+class Sensors(object):
+
+  def __init__(self, s):
+    self.s=s
+
+  def get_sensor_value(self, default, args):
+    obj, label, indx = key_deconstruct(args[0])
+    msg = SensorValue()
+    msg.plan_step = indx
+    msg.request_type = label
+    rargs = "get_sensor_value", msg, SensorValue
+    sr = SensorRequest(self.s)    
+    sr.make_request((rargs,))
 
 ######################################################################################################
 ### ros proxies/dummies entry point ##################################################################
@@ -173,29 +269,35 @@ class service_provider(object):
   def __init__(self):
     self._last_tag = None
 
-  def initialise(self, action_broadcast_f, webserver_broadcast_f, nau_broadcast_f, stop_f):
+  def initialise(self, action_broadcast_f, webserver_broadcast_f, sensors_broadcast_f,
+                       nau_broadcast_f, stop_f):
     self.init_planner(action_broadcast_f)
     self.init_webserver(webserver_broadcast_f)
+    self.init_sensors(sensors_broadcast_f)
     self.record_nau_listener(nau_broadcast_f)
     self.record_stop_listener(stop_f)
     
   def request_action(self, plan_index):
     self._request_action(plan_index)
   def ask_for_user_input(self, options, default, timeout, k):
-    self._last_tag = k
     self._ask_for_user_input(options, default, timeout, k)
-    
-  def on_received_planner_action(self, message, t=None):
-    apply(self.action_broadcast_f, (message, self._last_tag))
-  def on_received_webserver_message(self, message, t=None):
-    apply(self.webserver_broadcast_f, (message, self._last_tag))
-  def disable_user_info_request(self, tag):
-    pass
+  def request_change(self, params, k):
+    self.web_server.request_change(params, (k,))
+  def sense_value(self, default, k):
+    self._sense_value(default, k)  
+  def _request_action(self, plan_index):
+    self.planner.get_action(plan_index)
+  def _ask_for_user_input(self, options, default, timeout, k):
+    self.web_server.ask_for_user_input(options, default, timeout, (k,))
+  def _sense_value(self, default, k):
+    self.sensor_server.get_sensor_value(default, (k,))
   def set_parameter(self, path, v):
     print "[SP] Set: " + path + " to: " + str(v)
   def set_last_executed_action(self, a):
     pass
   def stop(self, req):
+    pass
+  def is_shutdown(self):
     pass
 
 class dummy_ros_proxy(service_provider):
@@ -207,15 +309,14 @@ class dummy_ros_proxy(service_provider):
     self.planner = DummyPlanner(2, action_broadcast_f, self.plan)
   def init_webserver(self, webserver_broadcast_f):
     self.web_server = DummyWebServer(10, webserver_broadcast_f)
+  def init_sensors(self, sensors_broadcast_f):
+    self.sensor_server = DummySensors(1, sensors_broadcast_f)
   def record_nau_listener(self, nau_broadcast_f):
     pass
   def record_stop_listener(self, stop_f):
     pass
-    
-  def _request_action(self, plan_index):
-    self.planner.get_action(plan_index)
-  def _ask_for_user_input(self, options, default, timeout, k):
-    self.web_server.ask_for_user_input(options, default, timeout, (k,))
+  def is_shutdown(self):
+    return False
 
 class ros_proxy(service_provider):
   def __init__(self):
@@ -225,15 +326,14 @@ class ros_proxy(service_provider):
     self.planner = Planner(action_broadcast_f)
   def init_webserver(self, webserver_broadcast_f):
     self.web_server = WebServer(webserver_broadcast_f)
+  def init_sensors(self, sensors_broadcast_f):
+    self.sensor_server = Sensors(sensors_broadcast_f)
   def record_nau_listener(self, nau_broadcast_f):
     rospy.Subscriber("/naoqi_driver/ALAnimatedSpeech/EndOfAnimatedSpeech", action_chain, nau_broadcast_f)
   def record_stop_listener(self, stop_f):
     rospy.Service('/stop_nao', PlannerMode, stop_f)
-    
-  def _request_action(self, plan_index):
-    self.planner.get_action(plan_index)
-  def _ask_for_user_input(self, options, default, timeout, k):
-    self.web_server.ask_for_user_input(options, default, timeout, (k,))
+  def set_parameter(self, path, v):
+    rospy.set_param(path, v)
   def set_last_executed_action(self, a):
     path_to_stage_param="/parameters/last_executed_action" # maybe just a yaml parameter?
     rospy.set_param(path_to_stage_param, a)
@@ -241,7 +341,7 @@ class ros_proxy(service_provider):
     rospy.wait_for_service('/naoqi_driver/set_behavior')
     try:
       stop_action = rospy.ServiceProxy('/naoqi_driver/set_behavior', SetString)
-      resp = stop_action('stopAllBehaviors')
+      resp = stop_action(SetString('stopAllBehaviors'))
       print("Stoping NAO Behaviors")
       return resp.success
       try:
@@ -250,19 +350,77 @@ class ros_proxy(service_provider):
         print(message)
     except rospy.ServiceException as e:
       print("Service call failed: %s"%e)
+  def is_shutdown(self):
+    return rospy.is_shutdown()
 
+######################################################################################################
+### stats ############################################################################################
+######################################################################################################
+
+
+def get_time():
+  try:
+    t=time.perf_counter()
+  except:
+    t=time.time()
+  return t
+
+def output_stats(proc_duration, action_sequence, action_hierarchy, timing_bank):
+  print "Procedure duration: " + str(round(proc_duration, 2))
+  print "Total number of actions: " + str(len(action_sequence))
+  robot = sensing = proc_sensing = delayers = enders = others = 0
+  for (op,params) in action_sequence:
+    h = action_hierarchy[op]
+    labelled = False
+    if "doactivity" in h:
+      labelled=True
+      robot+=1
+    if "anxietytest" in h or "qtypepreference" in h or "engagementtest" in h:
+      labelled=True
+      sensing +=1
+    if "firstcompleteprocedure" in h or "secondcompleteprocedure" in h or "querysitecheck" in h or "waitforproceduretoend" in h:
+      labelled=True
+      proc_sensing +=1
+    if "wait" in h or "pause" in h:
+      labelled=True
+      delayers += 1
+    if "goal" in h:
+      labelled=True
+      enders += 1
+    if not labelled: 
+      others += 1
+    
+  print "-- Number of robot behaviours: " + str(robot)
+  print "-- Number of sensing actions: " + str(sensing)
+  print "-- Number of procedure step query: " + str(proc_sensing)
+  print "-- Number of delaying actions: " + str(delayers)
+  print "-- Number of other actions: " + str(others)
+  print "-- Number of ender actions: " + str(enders)
+  print
+  print "Actions sequence: " + "; ".join(map(lambda (op,params): "(" + op + " " +" ".join(params)+")", action_sequence))
+  print 
+  print "Additional timers:"
+  for label in timing_bank:
+    print "-- Timer for " + str(label) + ": " + str(round(timing_bank[label], 2))
+  
+  
 ######################################################################################################
 ### interaction manager ##############################################################################
 ######################################################################################################
 
 class int_manager(object):
-  def __init__(self, service_provider):
+  def __init__(self, service_provider, sffn):
     self.service_provider = service_provider
     self.service_provider.initialise(self.planner_message_event, self.webserver_message_event,
-                                     self.nau_finish_message_event, self.stop_message_event)
+                                     self.sensor_message_event, self.nau_finish_message_event,
+                                     self.stop_message_event)
     self.active_requests = []
     self.request_defaults = {}
     self.active_requests_lock = threading.Lock()
+    
+    self._action_sequence=[]
+    self._timing_bank = {}
+    self._open_timers = {}
     
     self.status = manager_status_enum.before
     self.status_lock = threading.Lock()
@@ -270,76 +428,247 @@ class int_manager(object):
     self.interaction_step_status = None # XXX TODO
     
     self.counter=-1
-    self.init_timeouts()
+    self.parse_state_frame(sffn)
     
-  def init_timeouts(self):
-    self.op_timeout = {"progressprocstep": 20,
-                       "doactivity": 10,
-                       "anxietytest": 10,
-                       "idle": 10
-                       }
-
+  def parse_state_frame(self, sffn):
+    with open(sffn, "r") as stream:
+      frame_dict=yaml.safe_load(stream)
+    self._action_hierarchy = dict(map(lambda (k,v): (k,v.split(",")), frame_dict["action_hierarchy"].items()))
+    self._op_timeout = dict(map(lambda (k,v): (k,int(v)), frame_dict["timeouts"].items()))
+    self._bool_parameters = {}
+    if "parameters" in frame_dict:
+      params = frame_dict["parameters"]
+      if "boolean_vars" in params:
+        self._bool_parameters = params["boolean_vars"]
+    self._bool_sensors = {}
+    if "sensors" in frame_dict:
+      params = frame_dict["sensors"]
+      if "boolean_vars" in params:
+        self._bool_sensors = params["boolean_vars"]
 
   ######################################################################################################
   ### action early implementation ######################################################################
   ######################################################################################################
 
-  def ask_user_progress_proc_step(self, options, default, timeout, k):
-    self.service_provider.ask_for_user_input(options, default, timeout, k)
+  def tell_webserver_progress_proc_step(self, stage):
+    self.service_provider.request_change((stage,), key_maker("web server", "stage progression", self.counter))
 
-  def process_progress_proc_step_action(self, op, params,t):
+  def process_stage_changes(self, op, params):
+    if "introduction" in self._action_hierarchy[op]:
+      self.tell_webserver_progress_proc_step("introduction")
+    elif "startpreprocedure" in self._action_hierarchy[op]:
+      self.tell_webserver_progress_proc_step("preprocedure")
+    elif "startsitecheck" in self._action_hierarchy[op]:
+      self.tell_webserver_progress_proc_step("sitecheck")
+    elif "startprocedure" in self._action_hierarchy[op]:
+      self.tell_webserver_progress_proc_step("procedure")
+    elif "debrief" in self._action_hierarchy[op]:
+      self.tell_webserver_progress_proc_step("debrief")
+    elif "finish" in self._action_hierarchy[op]:
+      self.tell_webserver_progress_proc_step("finish")
+    elif "goal" in self._action_hierarchy[op]:
+      self.tell_webserver_progress_proc_step("goal")
+    
+  def process_wait(self, op, params):
+    label = "wait"
+    options = ("Ready")
+    default="Defaulted"
+    self.service_provider.ask_for_user_input(options, default, -1, key_maker("web server",label, self.counter))
+    self.add_flag(label, default)
+    self._open_timers[label]=get_time()
+
+  def process_type_preference_query(self, op, params, t):
+    label = "type preference query"
+    options = ("calm","active")
+    default="active"
+    self.service_provider.ask_for_user_input(options, default, t, key_maker("web server",label, self.counter))
+    self.add_flag(label, default)
+    self._open_timers[label]=get_time()
+
+  def process_activity_preference_query(self, op, params, t):
+    label = "activity preference query"
     s1,s2 = params[0:2]
-    default = s1
-    label = "stage progression"
-    self.ask_user_progress_proc_step((s1,s2), s2, t, key_maker("web server",label, self.counter))
+    default=s1
+    self.service_provider.ask_for_user_input((s1,s2), default, t, key_maker("web server",label, self.counter))
     self.add_flag(label, default)
+    self._open_timers[label]=get_time()
+    
+  def process_engagement_test(self, op, params, t):
+    label = "engagement test"
+    options = ("true","false")
+    default="true"
+    self.service_provider.ask_for_user_input(options, default, t, key_maker("web server",label, self.counter))
+    self.add_flag(label, default)
+    self._open_timers[label]=get_time()
 
-  def process_anxiety_test(self, op, params, t): ### XXX Do we have a return handler?
-    s1 = params[0]
-    default = op+"_"+ s1
-    label = "anxiety test"
-    self.ask_user_progress_proc_step(("true","false"), "false", t, key_maker("web server",label, self.counter))
+  def process_engagement_validate(self, op, params, t, default="true"):
+    label = "engagement validate"
+    options = ("true","false")
+    #default="true"
+    self.service_provider.ask_for_user_input(options, default, t, key_maker("web server",label, self.counter))
+    #self.add_flag(label, default) XXX we have lock
+    self.active_requests.append(label)
+    self.request_defaults[label]=default
+    self._open_timers[label]=get_time()
+
+  def request_engagement_sensor_value(self, op, params):
+    label = "engagement sensed"
+    default="true"
+    self.service_provider.sense_value(default, key_maker("sensors", "engagement sensed", self.counter))
     self.add_flag(label, default)
+    self._open_timers[label]=get_time()
+
+  def process_anxiety_test(self, op, params, t):
+    label = "anxiety test"
+    options = ("true","false")
+    default="true"
+    self.service_provider.ask_for_user_input(options, default, t, key_maker("web server",label, self.counter))
+    self.add_flag(label, default)
+    self._open_timers[label]=get_time()
+
+  def process_procedure_complete_query(self, op, params, t):
+    label = "procedure complete query"
+    options = ("true","false")
+    default="true"
+    self.service_provider.ask_for_user_input(options, default, t, key_maker("web server",label, self.counter))
+    self.add_flag(label, default)
+    self._open_timers[label]=get_time()
+
+  def process_site_check_query(self, op, params): 
+    label = "site check query"
+    options = ("true","false")
+    default="true"
+    self.service_provider.ask_for_user_input(options, default, -1, key_maker("web server",label, self.counter))
+    self.add_flag(label, default)
+    self._open_timers[label]=get_time()
+
+  def process_wait_procedure_end(self, op, params): 
+    label = "procedure ended ok query"
+    options = ("true","false")
+    default="true"
+    self.service_provider.ask_for_user_input(options, default, -1, key_maker("web server",label, self.counter))
+    self.add_flag(label, default)
+    self._open_timers[label]=get_time()
 
   def process_do_activity_action(self, op, params):
     label = "nau behaviour"
     self.add_flag(label, None)
+    self._open_timers[label]=get_time()
 
   def process_action_execution(self, op, params):
+    self._action_sequence.append((op,params))
     self._current_action = reconstruct_action_str(op, params)
     self.set_status_if_in_one_of(manager_status_enum.executing, (manager_status_enum.planning,))
-    if op.startswith("progressprocstep") :
-      t = self.op_timeout["progressprocstep"]
-      self.process_progress_proc_step_action(op,params,t)
-    elif op.startswith("doactivity"):
-      self.process_do_activity_action(op,params)
-      t = self.op_timeout["doactivity"]
-    elif op.startswith("mitigationactivity"):
-      self.process_do_activity_action(op,params)
-      t = self.op_timeout["doactivity"]
-    elif op.startswith("idle"):
-      t = self.op_timeout["idle"]
-    elif op.startswith("anxietytest"):
-      t = self.op_timeout["anxietytest"]
-      self.process_anxiety_test(op,params, t)
-    elif op.startswith("goal"):
+    timeout_label = None
+    
+    self.process_stage_changes(op, params)
+    
+    if "doactivity" in self._action_hierarchy[op]:
+      self.process_do_activity_action(op, params)
+      timeout_label = "doactivity"
+    elif "idle" in self._action_hierarchy[op]:
+      timeout_label = "idle"
+    elif "ivquerysitecheck" in self._action_hierarchy[op]:
+      timeout_label = "wait"
+      self.process_site_check_query(op, params)
+    elif "waitforproceduretoend" in self._action_hierarchy[op]:
+      timeout_label = "wait"
+      self.process_wait_procedure_end(op, params)
+    elif "wait" in self._action_hierarchy[op]:
+      self.process_wait(op, params)
+      timeout_label = "wait"
+    elif "pause" in self._action_hierarchy[op]:
+      timeout_label = "pause"
+    elif "anxietytest" in self._action_hierarchy[op]:
+      timeout_label = "query_response"
+      self.process_anxiety_test(op, params, self._op_timeout[timeout_label])
+    elif "qactivitypreference" in self._action_hierarchy[op]:
+      timeout_label = "query_response"
+      self.process_activity_preference_query(op, params, self._op_timeout[timeout_label])
+    elif "qtypepreference" in self._action_hierarchy[op]:
+      timeout_label = "query_response"
+      self.process_type_preference_query(op, params, self._op_timeout[timeout_label])
+    elif "engagementtest" in self._action_hierarchy[op]:
+      psym = "eamdisengaged"
+      if psym in self._bool_parameters:
+        timeout_label = "query_response"
+        self.process_engagement_test(op, params, self._op_timeout[timeout_label])
+      elif psym in self._bool_sensors:
+        timeout_label = "query_response"
+        self.request_engagement_sensor_value(op, params)  
+    elif "firstcompleteprocedure" in self._action_hierarchy[op]:
+      timeout_label = "query_response"
+      self.process_procedure_complete_query(op, params, self._op_timeout[timeout_label])
+    elif "secondcompleteprocedure" in self._action_hierarchy[op]:
+      timeout_label = "query_response"
+      self.process_procedure_complete_query(op, params, self._op_timeout[timeout_label])
+    elif "goal" in self._action_hierarchy[op]:      
       if not self.set_status_if_in_one_of(manager_status_enum.after, (manager_status_enum.executing,)):
         print "WARNING: goal achieved, but manager lost.."
       return
     else:
       print "WARNING: unknown action: ", op, params
-      return
-    MessageGiver(t, self.on_timer_event, None).start((key_maker("manager","timeout",self.counter),))
+      timeout_label = "unknown_action"
+    if timeout_label in self._op_timeout:
+      MessageGiver(self._op_timeout[timeout_label], self.on_timer_event, None).start((key_maker("manager","timeout",self.counter),))
     
 
   ######################################################################################################
   ### action late implementation #######################################################################
   ######################################################################################################
   
+  def if_bool_parameter_then_set(self, psym, v):
+    if psym in self._bool_parameters:
+      path_to_stage_param="/parameters/boolean_vars/" + psym
+      self.service_provider.set_parameter(path_to_stage_param, v)
+    elif psym in self._bool_sensors:
+      path_to_stage_param="/sensors/boolean_vars/" + psym
+      self.service_provider.set_parameter(path_to_stage_param, v)
+
+  def update_timing_bank(self, label):
+    if label in self._open_timers:
+      if not label in self._timing_bank:
+        self._timing_bank[label]=0
+      self._timing_bank[label] += get_time() - self._open_timers[label]
+      self._open_timers.pop(label)
+  
   def process_request_reply(self, flag, message):
-    if flag == "stage progression":
-      path_to_stage_param="parameters/multi_vars/proc_stage" # maybe just a yaml parameter?
-      self.service_provider.set_parameter(path_to_stage_param, message)
+    self.update_timing_bank(flag)
+  
+    if flag == "nau behaviour":
+      pass
+    elif flag == "idle":
+      pass
+    elif flag == "wait":
+      pass
+    elif flag == "pause":
+      pass
+    elif flag == "anxiety test":
+      self.if_bool_parameter_then_set("amanxietymanaged", message)
+    elif flag == "engagement test":
+      self.if_bool_parameter_then_set("eamdisengaged", not str(message).lower() == "true")
+    elif flag == "engagement sensed":
+      if SENSE_THEN_VALIDATE:
+        op = "engagementtest"
+        params = []
+        timeout_label = "query_response"
+        t = self._op_timeout[timeout_label]
+        self.process_engagement_validate(op, params, t, default=str(message).lower())
+        MessageGiver(t, self.on_timer_event, None).start((key_maker("manager","timeout", self.counter),))
+      else:
+        self.if_bool_parameter_then_set("eamdisengaged", not str(message).lower() == "true")
+    elif flag == "engagement validate":
+      self.if_bool_parameter_then_set("eamdisengaged", not str(message).lower() == "true")
+    elif flag == "type preference query":
+      self.if_bool_parameter_then_set("uselecteddivert", str(message).lower() == "active")
+    elif flag == "activity preference query":
+      self.if_bool_parameter_then_set("uselected " + str(message), True)
+    elif flag == "site check query":
+      self.if_bool_parameter_then_set("requiressitecheck", message)
+    elif flag == "procedure ended ok query":
+      self.if_bool_parameter_then_set("procedurehasfinished", message)
+    elif flag == "procedure complete query":
+      self.if_bool_parameter_then_set("procedurehasfinished", message)
     else:
       print "TODO: do something about ", flag, message
   
@@ -376,6 +705,10 @@ class int_manager(object):
     self.status_lock.release()
     return s
 
+  def force_set_status(self, status):
+    self.status_lock.acquire()
+    self.status = status
+    self.status_lock.release()
 
   ######################################################################################################
   ### active request maintenance #######################################################################
@@ -433,11 +766,13 @@ class int_manager(object):
       if self.counter == indx :
         if LOG:
           print "@TIMEOUT:"
-        for flag in self.active_requests:
+        
+        cp_active_requests = self.active_requests[:]
+        for flag in cp_active_requests:
           self.process_request_reply(flag, self.request_defaults[flag])
           self.handle_disengagements(flag)
-            
-        del self.active_requests[:]
+          self.active_requests.remove(flag)
+          
         self._record_if_requests_completed()
       else:
         if LOG:
@@ -452,10 +787,26 @@ class int_manager(object):
   ### broadcast handlers ###############################################################################
   ######################################################################################################
 
+  def sensor_message_event(self, sensors_message): # a reply from the sensors
+    message = str(sensors_message.parameters[0])
+    t = sensors_message.request_type
+    indx = sensors_message.plan_step
+    if self.remove_request_if_active(t, indx):
+      if LOG:
+        print "++++ Sensor message (" + str(t)+"): " + str(message)
+      self.process_request_reply(t, message)
+      self.record_if_requests_completed()
+    else:
+      if LOG:
+        print "++++ Ignoring: ", str(sensors_message)
+
   def planner_message_event(self, action_message): # a broadcast from the planner
+    self.update_timing_bank("planner")
     op = action_message.action_type 
     params = action_message.parameters
     indx = action_message.plan_step
+    if LOG:
+        print "++++ Planner response: ("+str(op)+ " " + " ".join(map(lambda x: str(x), params)) +")"
     self.process_action_execution(op, params)
 
   def webserver_message_event(self, web_message):
@@ -465,14 +816,14 @@ class int_manager(object):
     
     if self.remove_request_if_active(t, indx):
       if LOG:
-        print "++++ On timer event: " + str(message)
+        print "++++ Web server message ("+str(t)+"): " + str(message)
       self.process_request_reply(t, message)
       self.record_if_requests_completed()
     else:
       if LOG:
         print "++++ Ignoring: ", str(web_message)
 
-  def on_timer_event(self, message, k):
+  def on_timer_event(self, message, k): # timeout event
     obj, t, indx = key_deconstruct(k)
     if obj == "manager":
       if t == "timeout":
@@ -480,7 +831,7 @@ class int_manager(object):
       else:
         print "WARNING: unknown manager type: ", message, k
 
-  def nau_finish_message_event(self, action_message):
+  def nau_finish_message_event(self, action_message): # a broadcast from nau
     action_str = reconstruct_action_str(action_message.action_type, action_message.parameters)
     t = "nau behaviour"
     indx = action_message.plan_step
@@ -488,7 +839,7 @@ class int_manager(object):
     if self.remove_request_if_active(t, indx):
       if LOG:
         print "++++ On timer event: " + str(action_str) + " from: ", t, indx
-      self.process_request_reply(t, message)
+      self.process_request_reply(t, action_message)
       self.record_if_requests_completed()
     else:
       if LOG:
@@ -499,7 +850,7 @@ class int_manager(object):
     self._stop()
   
   def _stop(self):
-    pass
+    self.force_set_status(manager_status_enum.after)
 
   ######################################################################################################
   ### main loop ########################################################################################
@@ -511,20 +862,25 @@ class int_manager(object):
     if LOG:
       print "+ Calling planner..", self.counter
     if self.set_status_if_in_one_of(manager_status_enum.planning, (manager_status_enum.idle,)):
+      self._open_timers["planner"]=get_time()
       self.service_provider.request_action(self.counter)
 
   def _start_action_chain_when_appropriate(self):
-    while not self.is_finished():
+    while not self.is_finished() and not self.service_provider.is_shutdown():
       print "@@@@@@MainLoop Status: " + str(self.get_status_str())
       if self.is_ready():
         self.start_action_chain()
-      time.sleep(ACTION_CHAIN_LAUNCHER_PAUSE)
+      time.sleep(self._op_timeout["action_chain_launcher_pause"])
 
   def init(self):
+    start_time = get_time()
     self.set_status_if_in_one_of(manager_status_enum.idle, (manager_status_enum.before,))
     self._start_action_chain_when_appropriate()
     if LOG:
       print "=== Completed Int manager loop ====="
+    end_time = get_time()
+    proc_duration = end_time - start_time
+    output_stats(proc_duration, self._action_sequence, self._action_hierarchy, self._timing_bank)
 
 if __name__ == '__main__':
   import rospy
@@ -532,11 +888,12 @@ if __name__ == '__main__':
   from std_msgs.msg import String
   from tobo_planner.msg import action_chain
   from tobo_planner.msg import web_chain
-  from tobo_planner.srv import PlannerMode,PlannerModeResponse
+  from tobo_planner.srv import PlannerMode,PlannerModeResponse,SensorValue,SensorValueResponse
   from naoqi_bridge_msgs.srv import SetString
-
-  im = int_manager(ros_proxy())
-  rospy.init_node('ros_int_manager', anonymous=True)
+  
+  yaml_file = rospy.get_param("/state_frame_fn")
+  im = int_manager(ros_proxy(), yaml_file)
+  rospy.init_node('ros_int_manager')
   try:
     im.init()
   except rospy.exceptions.ROSInterruptException:
